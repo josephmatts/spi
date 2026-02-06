@@ -1,9 +1,8 @@
-module i_spi_master
+module spi_master
 #(
-    parameter CLOCK_DIVIDER = 5, // >= 2
-    parameter CPOL          = 0, // 0 - 1
-    parameter CPHA          = 0, // 0 - 1
+    parameter CLK_DIV       = 2, // >= 2
     parameter DATA_WIDTH    = 8
+    // mode 0
 )
 (
   input clk,
@@ -13,87 +12,89 @@ module i_spi_master
   
   output cs,
   output reg sclk,
-  output reg mosi,
-  input miso
-     
+  output mosi      
 );
 
-// state
+// SCLK Generator
+reg [$clog2(CLK_DIV)-1:0] clk_cnt;
+reg                       sclk_en;
+always@(posedge clk) begin
+    if(rst) begin
+        clk_cnt <= 0;
+        sclk    <= 0;
+    end else if(sclk_en) begin
+        if(clk_cnt == CLK_DIV-1) begin
+            clk_cnt <= 0;
+            sclk    <= ~sclk;
+        end else begin
+            clk_cnt <= clk_cnt + 1;
+        end
+    end else begin
+        clk_cnt <= 0;
+        sclk    <= 0;
+    end
+end
+
 localparam [1:0]
     IDLE  = 2'b00,
-    START = 2'b01,  // load registers
-    DATA  = 2'b10, 
-    STOP  = 2'b11;  // reset registers
+    START = 2'b01,
+    DATA  = 2'b10,
+    STOP  = 2'b11;
 reg [1:0] state;
 
+reg [DATA_WIDTH-1:0]       shift_tx;
+reg [$clog2(DATA_WIDTH):0] bit_cnt;
 
-reg [DATA_WIDTH-1:0] data_to_send;
-reg [$clog2(DATA_WIDTH):0] bit_counter;
-
-assign cs = state == IDLE; // cs goes high at idle only
-
-// registers and data
-always@(posedge clk) begin
+assign cs   = (state == IDLE || state == STOP);
+assign mosi = shift_tx[DATA_WIDTH-1];
+// FSM
+always@(posedge clk or posedge rst) begin
     if(rst) begin
-        data_to_send <= 0;
-        bit_counter  <= 0;
+        state    <= IDLE;
+        shift_tx <= 0;
+        bit_cnt  <= 0;
+        sclk_en  <= 0;
     end else begin
-        case (state)
-            : 
-            default: 
-        endcase
-
-
-    end
-end
-
-
-
-// state change logic
-// !need to factor in sclk!
-always@(posedge clk) begin
-    if(rst) begin
-        state <= IDLE;
-    end else begin
-        case(state)
+        case(state) 
         
             IDLE : begin
-                state <= wr_en ? START : IDLE;
+               if(wr_en) begin
+                    state    <= START;
+                    shift_tx <= din;
+                    bit_cnt  <= 0;
+               end else begin
+                   state    <= IDLE;
+                   shift_tx <= 0;
+                   bit_cnt  <= 0;
+                   sclk_en  <= 0;
+               end
             end
-
+        
             START : begin
-                state <= DATA;
+                state   <= DATA;
+                sclk_en <= 1;            
             end
-
+            
             DATA : begin
-                state <= (bit_counter == DATA_WIDTH-1) ? STOP : DATA;
+               if(bit_cnt == DATA_WIDTH-1) begin
+                    state   <= STOP;
+                    sclk_en <= 0;
+                    bit_cnt <= 0;
+               end else if(sclk && clk_cnt == CLK_DIV-1) begin  // data shifted out on falling edge
+                    shift_tx <= shift_tx << 1;
+                    bit_cnt  <= bit_cnt + 1;
+               end
             end
-
+            
             STOP : begin
-                state <= IDLE;
+                state    <= IDLE;
+                shift_tx <= 0;
+                bit_cnt  <= 0;
             end
-
+            
+               
         endcase
     end
 end
-
-
-// clock divider
-reg [$clog2(CLOCK_DIVIDER+1):0] clk_counter;
-always@(posedge clk) begin
-    if(rst || state == IDLE) begin
-        clk_counter <= 0;
-        sclk        <= CPOL;
-    end else begin
-        if(clk_counter == CLOCK_DIVIDER-1) begin
-            sclk        <= ~sclk;
-            clk_counter <= 0; 
-        end else begin
-            clk_counter <= clk_counter + 1'b1;
-        end
-    end
-end
-
-
 
 endmodule
